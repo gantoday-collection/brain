@@ -4,15 +4,38 @@ import (
 	"net/http"
 	"brain/utils"
 	"brain/game/socketconn"
-	"log"
 	"brain/game/room"
 	"brain/game/rankplay"
+	"sync"
+	"log"
 )
 var newplear chan string
-var roomIdSign map[string] chan string
+var idSign roomIdSign
+
+type roomIdSign struct {
+	v map[string] chan string
+	sync.RWMutex
+}
+
+func (this *roomIdSign)Put(key string,value chan string)  {
+	this.Lock()
+	defer this.Unlock()
+	this.v[key]=value
+}
+func (this *roomIdSign)Get(key string) (chan string ,bool){
+	this.RLock()
+	defer   this.RUnlock()
+	channel,ok:=this.v[key]
+	return channel,ok
+}
+func (this *roomIdSign)Del(key string)  {
+	this.RLock()
+	defer   this.RUnlock()
+	delete(this.v, key)
+}
 func init() {
 	newplear=make(chan string,10)
-	roomIdSign=make(map[string] chan string)
+	idSign=roomIdSign{v:make(map[string]chan string)}
 	go newPlear()
 }
 //排位请求处理
@@ -39,13 +62,13 @@ func rankPlay(w http.ResponseWriter, r *http.Request){
 
 	//将连接保存到连接池里面
 	socketconn.WebSocketPollInstance().Put(msg.Token,ws)
-	idchan,ok:=roomIdSign[msg.Token]//如果以前有连接的话就关闭以前的连接
+	idchan,ok:=idSign.Get(msg.Token)//如果以前有连接的话就关闭以前的连接
 	if ok {
 		//如果右链接就关闭保存的idchan
 		close(idchan)
 	}
 	sig:=make(chan string,1)
-	roomIdSign[msg.Token]=sig
+	idSign.Put(msg.Token,sig)
 	roomId:=<-sig
 	//关闭通道
 	close(sig)
@@ -54,7 +77,7 @@ func rankPlay(w http.ResponseWriter, r *http.Request){
 	//获得关闭信号就关闭连接
 	<-sign
 	//从roomIdSign中删除
-	delete(roomIdSign, msg.Token)
+	idSign.Del(msg.Token)
 }
 //新人对决的函数
 func newPlear()  {
@@ -77,8 +100,10 @@ func newPlear()  {
 			go rankplay.RankPlayInstance().MsgFunc(two,roomm)
 			go func() {
 				id:=roomm.Id()
-				roomIdSign[one]<-id
-				roomIdSign[two]<-id
+				onechan,_:=idSign.Get(one)
+				onechan<-id
+				twochan,_:=idSign.Get(two)
+				twochan<-id
 			}()
 		}
 	}()
